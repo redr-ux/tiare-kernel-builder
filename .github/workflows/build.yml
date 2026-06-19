@@ -1,0 +1,101 @@
+name: Build Kernel for Redmi Go (tiare) with Overclock
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y git make bc bison flex libssl-dev libncurses-dev \
+            crossbuild-essential-armhf gcc-arm-linux-gnueabi device-tree-compiler \
+            python3 python-is-python3
+
+      - name: Clone kernel source (LineageOS)
+        run: |
+          git clone https://github.com/LineageOS/android_kernel_xiaomi_msm8937
+          cd android_kernel_xiaomi_msm8937
+          git fetch --all
+          git checkout lineage-17.1 || git checkout lineage-18.1 || git checkout cm-14.1
+
+      - name: Apply overclock patch (1.65 GHz)
+        working-directory: android_kernel_xiaomi_msm8937
+        run: |
+          if [ -f arch/arm/boot/dts/qcom/msm8937.dtsi ]; then
+            cat > overclock.patch << 'EOF'
+          diff --git a/arch/arm/boot/dts/qcom/msm8937.dtsi b/arch/arm/boot/dts/qcom/msm8937.dtsi
+          --- a/arch/arm/boot/dts/qcom/msm8937.dtsi
+          +++ b/arch/arm/boot/dts/qcom/msm8937.dtsi
+          @@ -150,7 +150,9 @@
+                   opp-1094400000 {
+                       opp-hz = /bits/ 64 <1094400000>;
+                   };
+          -        opp-1401600000 {
+          -            opp-hz = /bits/ 64 <1401600000>;
+          +        opp-1651200000 {
+          +            opp-hz = /bits/ 64 <1651200000>;
+          +            opp-microvolt = <1350000>;
+                   };
+               };
+           };
+          EOF
+            git apply overclock.patch
+          else
+            echo "Файл msm8937.dtsi не найден, пропускаем патч"
+            exit 1
+          fi
+
+      - name: Configure kernel
+        working-directory: android_kernel_xiaomi_msm8937
+        run: |
+          export ARCH=arm
+          export CROSS_COMPILE=arm-linux-gnueabi-
+          if [ -f arch/arm/configs/tiare_defconfig ]; then
+            make tiare_defconfig
+          elif [ -f arch/arm/configs/msm8937_defconfig ]; then
+            make msm8937_defconfig
+          else
+            echo "Подходящий defconfig не найден"
+            exit 1
+          fi
+          scripts/config --file .config --enable CPU_FREQ_GOV_INTERACTIVE
+          scripts/config --file .config --enable CPU_FREQ_GOV_POWERSAVE
+          scripts/config --file .config --enable CPU_FREQ_GOV_USERSPACE
+
+      - name: Build kernel
+        working-directory: android_kernel_xiaomi_msm8937
+        run: |
+          export ARCH=arm
+          export CROSS_COMPILE=arm-linux-gnueabi-
+          make -j$(nproc) zImage dtbs
+
+      - name: Create boot.img
+        working-directory: android_kernel_xiaomi_msm8937
+        run: |
+          DTB_PATH=$(find arch/arm/boot/dts -name "msm8937-qrd-sku3-tiare.dtb" | head -n 1)
+          if [ -z "$DTB_PATH" ]; then
+            DTB_PATH=$(find arch/arm/boot/dts -name "*.dtb" | head -n 1)
+          fi
+          if [ -z "$DTB_PATH" ]; then
+            echo "DTB файл не найден"
+            exit 1
+          fi
+          mkbootimg --kernel arch/arm/boot/zImage \
+                    --dtb "$DTB_PATH" \
+                    --base 0x80000000 \
+                    --ramdisk_offset 0x01000000 \
+                    --tags_offset 0x00000100 \
+                    --pagesize 2048 \
+                    -o boot_overclock.img
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot_overclock
+          path: android_kernel_xiaomi_msm8937/boot_overclock.img
