@@ -1,0 +1,121 @@
+name: Build Kernel for Redmi Go (tiare) with Overclock
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y git make bc bison flex libssl-dev libncurses-dev \
+            crossbuild-essential-armhf device-tree-compiler \
+            python3 python-is-python3 libfdt-dev pkg-config libelf-dev zlib1g-dev
+
+      - name: Clone kernel source (LineageOS)
+        run: |
+          git clone https://github.com/LineageOS/android_kernel_xiaomi_msm8937
+          cd android_kernel_xiaomi_msm8937
+          git fetch --all
+          git checkout lineage-17.1 || git checkout lineage-18.1 || git checkout cm-14.1
+
+      - name: Apply overclock by finding max frequency in dtsi files
+        working-directory: android_kernel_xiaomi_msm8937
+        run: |
+          DTS_FILES=$(find arch/arm/boot/dts/ -name "*.dtsi" -type f)
+          if [ -z "$DTS_FILES" ]; then
+            DTS_FILES=$(find arch/arm/boot/dts/ -name "*.dts" -type f)
+          fi
+          if [ -z "$DTS_FILES" ]; then
+            echo "Нет файлов Device Tree"
+            exit 1
+          fi
+          MAX_FREQ=$(grep -h -E -o '1[0-9]{9,10}' $DTS_FILES | sort -n | tail -n 1)
+          if [ -z "$MAX_FREQ" ]; then
+            echo "Не найдена частота > 1 ГГц"
+            exit 1
+          fi
+          echo "Найдена максимальная частота: $MAX_FREQ"
+          sed -i "s/$MAX_FREQ/1651200000/g" $DTS_FILES
+          sed -i "s/opp-$MAX_FREQ/opp-1651200000/g" $DTS_FILES
+          sed -i '/opp-1651200000/{n; /opp-microvolt/! s/.*/            opp-microvolt = <1350000>;/}' $DTS_FILES
+          echo "Разгон применён: $MAX_FREQ -> 1651200000"
+
+      - name: Configure kernel
+        working-directory: android_kernel_xiaomi_msm8937
+        run: |
+          export ARCH=arm
+          export CROSS_COMPILE=arm-linux-gnueabi-
+          if [ -f arch/arm/configs/tiare_defconfig ]; then
+            make tiare_defconfig
+          elif [ -f arch/arm/configs/msm8937_defconfig ]; then
+            make msm8937_defconfig
+          else
+            find arch/arm/configs/ -name "*defconfig" | head -n 1 | xargs -r make
+          fi
+          scripts/config --file .config --disable WERROR || true
+          scripts/config --file .config --enable CPU_FREQ_GOV_INTERACTIVE
+          scripts/config --file .config --enable CPU_FREQ_GOV_POWERSAVE
+          scripts/config --file .config --enable CPU_FREQ_GOV_USERSPACE
+
+      - name: Workaround for dtc build (force use system dtc)
+        working-directory: android_kernel_xiaomi_msm8937
+        run: |
+          rm -rf scripts/dtc
+          mkdir -p scripts/dtc
+          echo "int main() { return 0; }" > scripts/dtc/dtc.c
+          echo "int main() { return 0; }" > scripts/dtc/dtc-lexer.lex.c
+          echo "int main() { return 0; }" > scripts/dtc/dtc-parser.tab.c
+          cat > scripts/dtc/Makefile << 'EOF'
+          all:
+          clean:
+          .PHONY: all clean
+          EOF
+          touch scripts/dtc/.built
+          sudo ln -sf /usr/bin/dtc /usr/local/bin/dtc
+
+      - name: Build kernel
+        working-directory: android_kernel_xiaomi_msm8937
+        run: |
+          export ARCH=arm
+          export CROSS_COMPILE=arm-linux-gnueabi-
+          make DTC=/usr/bin/dtc DTC_EXT=/usr/bin/dtc HOSTCFLAGS="-Wno-error" -j$(nproc) zImage dtbs
+
+      - name: Create boot.img
+        working-directory: android_kernel_xiaomi_msm8937
+        run: |
+          DTB_PATH=$(find arch/arm/boot/dts -name "msm8937-qrd-sku3-tiare.dtb" | head -n 1)
+          if [ -z "$DTB_PATH" ]; then
+            DTB_PATH=$(find arch/arm/boot/dts -name "*.dtb" | head -n 1)
+          fi
+          if [ -z "$DTB_PATH" ]; then
+            echo "DTB не найден, генерируем из dts"
+            DTS_PATH=$(find arch/arm/boot/dts -name "msm8937-qrd-sku3-tiare.dts" | head -n 1)
+            if [ -z "$DTS_PATH" ]; then
+              DTS_PATH=$(find arch/arm/boot/dts -name "*.dts" | head -n 1)
+            fi
+            if [ -n "$DTS_PATH" ]; then
+              dtc -I dts -O dtb -o $(basename "$DTS_PATH" .dts).dtb "$DTS_PATH"
+              DTB_PATH=$(basename "$DTS_PATH" .dts).dtb
+            else
+              exit 1
+            fi
+          fi
+          mkbootimg --kernel arch/arm/boot/zImage \
+                    --dtb "$DTB_PATH" \
+                    --base 0x80000000 \
+                    --ramdisk_offset 0x01000000 \
+                    --tags_offset 0x00000100 \
+                    --pagesize 2048 \
+                    -o boot_overclock.img
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot_overclock
+          path: android_kernel_xiaomi_msm8937/boot_overclock.img
