@@ -17,13 +17,13 @@ jobs:
             crossbuild-essential-armhf gcc-arm-linux-gnueabi device-tree-compiler \
             python3 python-is-python3
 
-      - name: Clone Xiaomi kernel source
+      - name: Clone LineageOS kernel source for tiare
         run: |
-          git clone --depth=1 https://github.com/MiCode/Xiaomi_Kernel_OpenSource -b tiare-oss
-          cd Xiaomi_Kernel_OpenSource
+          git clone --depth=1 https://github.com/LineageOS/android_kernel_xiaomi_msm8937 -b lineage-17.1
+          cd android_kernel_xiaomi_msm8937
 
       - name: Apply overclock patch (1.65 GHz)
-        working-directory: Xiaomi_Kernel_OpenSource
+        working-directory: android_kernel_xiaomi_msm8937
         run: |
           cat > overclock.patch << 'EOF'
           diff --git a/arch/arm/boot/dts/qcom/msm8937.dtsi b/arch/arm/boot/dts/qcom/msm8937.dtsi
@@ -45,7 +45,7 @@ jobs:
           git apply overclock.patch
 
       - name: Configure kernel
-        working-directory: Xiaomi_Kernel_OpenSource
+        working-directory: android_kernel_xiaomi_msm8937
         run: |
           export ARCH=arm
           export CROSS_COMPILE=arm-linux-gnueabi-
@@ -55,14 +55,14 @@ jobs:
           scripts/config --file .config --enable CPU_FREQ_GOV_USERSPACE
 
       - name: Build kernel
-        working-directory: Xiaomi_Kernel_OpenSource
+        working-directory: android_kernel_xiaomi_msm8937
         run: |
           export ARCH=arm
           export CROSS_COMPILE=arm-linux-gnueabi-
           make -j$(nproc) zImage dtbs
 
       - name: Create boot.img
-        working-directory: Xiaomi_Kernel_OpenSource
+        working-directory: android_kernel_xiaomi_msm8937
         run: |
           mkbootimg --kernel arch/arm/boot/zImage \
                     --dtb arch/arm/boot/dts/qcom/msm8937-qrd-sku3-tiare.dtb \
@@ -76,4 +76,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: boot_overclock
-          path: Xiaomi_Kernel_OpenSource/boot_overclock.img
+          path: android_kernel_xiaomi_msm8937/boot_overclock.img
